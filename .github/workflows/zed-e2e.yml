@@ -69,7 +69,7 @@ jobs:
 
       - name: zed install
         working-directory: app
-        run: "$ZED" install
+        run: "$ZED install"
 
       - name: Go builds and runs against the zed-sourced module
         working-directory: app
