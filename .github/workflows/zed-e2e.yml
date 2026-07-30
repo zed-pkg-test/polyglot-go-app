@@ -1,0 +1,114 @@
+name: zed e2e (polyglot, golang slice)
+
+# The other half of the polyglot proof: the *same* upstream repo as
+# polyglot-node-app, a different package. This app downloads Go bytes only, and
+# the Go toolchain resolves the zed-sourced module as an ordinary path
+# replacement.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this app
+        uses: actions/checkout@v4
+        with:
+          path: app
+          persist-credentials: false
+
+      # zed-cli path-depends on ../zed-interfaces, so they must be siblings.
+      - name: Check out zed-cli
+        uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-cli
+          path: zed-cli
+          persist-credentials: false
+      - name: Check out zed-interfaces
+        uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          path: zed-interfaces
+          persist-credentials: false
+      - name: Check out the polyglot library
+        uses: actions/checkout@v4
+        with:
+          repository: zed-pkg-test/polyglot-lib
+          path: polyglot-lib
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Build the zed CLI
+        run: cargo build --release --bin zed --manifest-path zed-cli/Cargo.toml
+
+      - name: Point zed at a hermetic file registry
+        run: |
+          {
+            echo "ZED=$GITHUB_WORKSPACE/zed-cli/target/release/zed"
+            echo "ZED_PKG_REGISTRY=file://$RUNNER_TEMP/zed-reg"
+            echo "ZED_PKG_HOME=$RUNNER_TEMP/zed-home"
+          } >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/zed-reg" "$RUNNER_TEMP/zed-home"
+
+      - name: Publish all four language packages from one repo
+        working-directory: polyglot-lib
+        run: |
+          "$ZED" publish --skip-vcs-checks --allow-dirty
+          test "$(find "$RUNNER_TEMP/zed-reg" -name '*.tar.gz' | wc -l)" -eq 4
+
+      - name: zed install
+        working-directory: app
+        run: "$ZED" install
+
+      - name: Go builds and runs against the zed-sourced module
+        working-directory: app
+        run: |
+          go build ./...
+          go run . | tee run.log
+          grep -q 'polyglot-lib/go' run.log
+          installed=.vendor/.zed/zedtest/polyglot-lib-golang
+          test -f "$installed/client.go"
+          # A Go consumer must not receive the other languages' source.
+          for stray in index.js pyproject.toml Cargo.toml; do
+            if [ -e "$installed/$stray" ]; then
+              echo "::error::$stray leaked into the golang package"
+              exit 1
+            fi
+          done
+
+      - name: The go.work wiring is generated and usable
+        working-directory: app
+        run: |
+          test -f .zed/go.work
+          grep -q 'polyglot-lib-golang' .zed/go.work
+          # The generated workspace must build on its own too.
+          GOWORK="$PWD/.zed/go.work" go build ./...
+
+      - name: A different language is refused, not silently installed
+        working-directory: app
+        run: |
+          scratch="$RUNNER_TEMP/wrong-language"
+          mkdir -p "$scratch"
+          cp go.mod "$scratch/"
+          sed 's/polyglot-lib-golang/polyglot-lib-nodejs/' .zpkg.toml > "$scratch/.zpkg.toml"
+          cd "$scratch"
+          if "$ZED" install > out.log 2>&1; then
+            echo "::error::an npm package installed into a go project"
+            cat out.log
+            exit 1
+          fi
+          cat out.log
+          grep -q 'npm' out.log
+          grep -q 'gomod' out.log
+          grep -q 'zedtest/polyglot-lib-golang' out.log
