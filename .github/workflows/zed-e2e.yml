@@ -59,7 +59,7 @@ jobs:
           cache: false
       - name: Build exact Zed CLI
         run: cargo build --locked --release --bin zed --manifest-path zed-cli/Cargo.toml
-      - name: Configure and populate hermetic registry
+      - name: Configure hermetic registry
         run: |
           {
             echo "ZED=$GITHUB_WORKSPACE/zed-cli/target/release/zed"
@@ -67,8 +67,12 @@ jobs:
             echo "ZED_PKG_HOME=$RUNNER_TEMP/zed-home"
           } >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/zed-reg" "$RUNNER_TEMP/zed-home"
-          (cd polyglot-lib && "$GITHUB_WORKSPACE/zed-cli/target/release/zed" publish --skip-vcs-checks)
-          (cd shared-schema && "$GITHUB_WORKSPACE/zed-cli/target/release/zed" publish --skip-vcs-checks)
+      - name: Publish both immutable source repositories
+        run: |
+          set -euo pipefail
+          (cd polyglot-lib && "$ZED" publish --skip-vcs-checks)
+          (cd shared-schema && "$ZED" publish --skip-vcs-checks)
+          test "$(find "$RUNNER_TEMP/zed-reg" -name '*.tar.gz' | wc -l)" -eq 5
       - name: Install both sources and run Go
         working-directory: app
         run: |
