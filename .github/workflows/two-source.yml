@@ -1,0 +1,91 @@
+name: two-source Zed consumer
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ZED_CLI_REF: 7e5ac1897a872223f8316ef1c3342a2fa1982504
+  ZED_INTERFACES_REF: 6e893ad0f28ccfbb7722f007d75e88548f1bcfdf
+  POLYGLOT_REF: 998964aa58e49595547650b4a8da407b7a2283a9
+  SHARED_SCHEMA_REF: 41cec5076791555d4b72e72da0a42888da0522d0
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: app
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg/zed-cli
+          ref: ${{ env.ZED_CLI_REF }}
+          path: zed-cli
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: ${{ env.ZED_INTERFACES_REF }}
+          path: zed-interfaces
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg-test/polyglot-lib
+          ref: ${{ env.POLYGLOT_REF }}
+          path: polyglot-lib
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg-test/shared-schema
+          ref: ${{ env.SHARED_SCHEMA_REF }}
+          path: shared-schema
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed
+        with:
+          go-version: '1.22'
+          cache: false
+      - name: Build exact Zed candidate
+        run: cargo build --locked --release --bin zed --manifest-path zed-cli/Cargo.toml
+      - name: Publish both source repositories
+        run: |
+          set -euo pipefail
+          export ZED="$GITHUB_WORKSPACE/zed-cli/target/release/zed"
+          export ZED_PKG_REGISTRY="file://$RUNNER_TEMP/registry"
+          export ZED_PKG_HOME="$RUNNER_TEMP/home"
+          mkdir -p "$RUNNER_TEMP/registry" "$RUNNER_TEMP/home"
+          (cd polyglot-lib && "$ZED" publish --skip-vcs-checks)
+          (cd shared-schema && "$ZED" publish --skip-vcs-checks)
+      - name: Install and execute both dependencies
+        working-directory: app
+        run: |
+          set -euo pipefail
+          export ZED="$GITHUB_WORKSPACE/zed-cli/target/release/zed"
+          export ZED_PKG_REGISTRY="file://$RUNNER_TEMP/registry"
+          export ZED_PKG_HOME="$RUNNER_TEMP/home"
+          "$ZED" install --install-mode copy
+          output="$(go run .)"
+          test "$output" = 'hello go-app from polyglot-lib/go'
+          test -f .vendor/.zed/zedtest/polyglot-lib-golang/go.mod
+          test -f .vendor/.zed/zedtest/shared-schema/schemas/job-envelope.schema.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          schema = json.loads(Path('.vendor/.zed/zedtest/shared-schema/schemas/job-envelope.schema.json').read_text())
+          assert schema['title'] == 'JobEnvelope'
+          paths = json.loads(Path('.zed/paths.json').read_text())
+          names = {item['package'] for item in paths['packages']}
+          assert {'zedtest/polyglot-lib-golang', 'zedtest/shared-schema'} <= names
+          PY
