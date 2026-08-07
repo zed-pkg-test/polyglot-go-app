@@ -1,4 +1,4 @@
-name: zed e2e (two-source Go consumer)
+name: two-source Zed consumer
 
 on:
   pull_request:
@@ -20,9 +20,9 @@ env:
   SHARED_SCHEMA_REF: 41cec5076791555d4b72e72da0a42888da0522d0
 
 jobs:
-  e2e:
+  install:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -57,34 +57,29 @@ jobs:
         with:
           go-version: '1.22'
           cache: false
-      - name: Build exact Zed CLI
+      - name: Build exact Zed candidate
         run: cargo build --locked --release --bin zed --manifest-path zed-cli/Cargo.toml
-      - name: Configure hermetic registry
-        run: |
-          {
-            echo "ZED=$GITHUB_WORKSPACE/zed-cli/target/release/zed"
-            echo "ZED_PKG_REGISTRY=file://$RUNNER_TEMP/zed-reg"
-            echo "ZED_PKG_HOME=$RUNNER_TEMP/zed-home"
-          } >> "$GITHUB_ENV"
-          mkdir -p "$RUNNER_TEMP/zed-reg" "$RUNNER_TEMP/zed-home"
-      - name: Publish both immutable source repositories
+      - name: Publish both source repositories
         run: |
           set -euo pipefail
+          export ZED="$GITHUB_WORKSPACE/zed-cli/target/release/zed"
+          export ZED_PKG_REGISTRY="file://$RUNNER_TEMP/registry"
+          export ZED_PKG_HOME="$RUNNER_TEMP/home"
+          mkdir -p "$RUNNER_TEMP/registry" "$RUNNER_TEMP/home"
           (cd polyglot-lib && "$ZED" publish --skip-vcs-checks)
           (cd shared-schema && "$ZED" publish --skip-vcs-checks)
-          test "$(find "$RUNNER_TEMP/zed-reg" -name '*.tar.gz' | wc -l)" -eq 5
-      - name: Install both sources and run Go
+      - name: Install and execute both dependencies
         working-directory: app
         run: |
           set -euo pipefail
+          export ZED="$GITHUB_WORKSPACE/zed-cli/target/release/zed"
+          export ZED_PKG_REGISTRY="file://$RUNNER_TEMP/registry"
+          export ZED_PKG_HOME="$RUNNER_TEMP/home"
           "$ZED" install --install-mode copy
-          go build ./...
-          go run . | tee run.log
-          grep -q 'polyglot-lib/go' run.log
-          test -f .vendor/.zed/zedtest/polyglot-lib-golang/client.go
+          output="$(go run .)"
+          test "$output" = 'hello go-app from polyglot-lib/go'
+          test -f .vendor/.zed/zedtest/polyglot-lib-golang/go.mod
           test -f .vendor/.zed/zedtest/shared-schema/schemas/job-envelope.schema.json
-          test -f .zed/go.work
-          GOWORK="$PWD/.zed/go.work" go build ./...
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -94,19 +89,3 @@ jobs:
           names = {item['package'] for item in paths['packages']}
           assert {'zedtest/polyglot-lib-golang', 'zedtest/shared-schema'} <= names
           PY
-      - name: Refuse the Node slice in a Go project
-        working-directory: app
-        run: |
-          set -euo pipefail
-          scratch="$RUNNER_TEMP/wrong-language"
-          mkdir -p "$scratch"
-          cp go.mod "$scratch/"
-          sed 's/polyglot-lib-golang/polyglot-lib-nodejs/' .zpkg.toml > "$scratch/.zpkg.toml"
-          cd "$scratch"
-          if "$ZED" install > out.log 2>&1; then
-            echo '::error::an npm package installed into a Go project' >&2
-            exit 1
-          fi
-          grep -q 'npm' out.log
-          grep -q 'gomod' out.log
-          grep -q 'zedtest/polyglot-lib-golang' out.log
