@@ -2,17 +2,16 @@
 org = "zedtest"
 name = "polyglot-go-app"
 version = "0.1.0"
-description = "Consumes the golang slice of zedtest/polyglot-lib"
+description = "Go consumer of a language-specific library and a universal schema package"
 license = "MIT"
 
 [package.repository]
 vcs = "git"
 url = "https://github.com/zed-pkg-test/polyglot-go-app"
 
-# The same upstream repo as polyglot-node-app, a different package: one version,
-# one source of truth, and this project downloads Go bytes only.
 [dependencies]
 "zedtest/polyglot-lib-golang" = "^0.1.0"
+"zedtest/shared-schema" = "^1.0.0"
 
 [install]
 dir = ".vendor/.zed"
